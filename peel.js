@@ -37,15 +37,27 @@
   .peel-stuck, .peel-flap { position: absolute; inset: 0; -webkit-mask-size: 100% 100%; mask-size: 100% 100%; }
   .peel-stuck { background-repeat: no-repeat; }
   .peel-flap { display: none; transform-origin: 0 0; background-color: #ece4d2; }
+  /* 角落里的小玻璃件：左下提示、右下重来，都避开中间的纸片 */
   .peel-hint, .peel-again {
-    position: absolute; left: 50%; bottom: 4%; transform: translateX(-50%);
-    color: rgba(255,255,255,.75); font-size: clamp(12px, 1.6vw, 16px); letter-spacing: .1em; white-space: nowrap;
-    pointer-events: none; transition: opacity .6s; text-shadow: 0 1px 4px #000; z-index: 20;
+    position: absolute; bottom: 3%; z-index: 20;
+    color: rgba(255,255,255,.82);
+    background: rgba(12,14,16,.38); border: 1px solid rgba(255,255,255,.14);
+    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+    transition: opacity .6s, background .2s;
+  }
+  .peel-hint {
+    left: 3%; pointer-events: none; white-space: nowrap;
+    padding: .45em 1.1em .45em 1.4em; border-radius: 99px;
+    font-size: clamp(11px, 1.3vw, 14px); letter-spacing: .35em;
   }
   .peel-again {
-    pointer-events: auto; opacity: 0; background: rgba(0,0,0,.35); border: 1px solid rgba(255,255,255,.4);
-    padding: .5em 1.2em; border-radius: 99px; cursor: pointer; font: inherit; font-size: clamp(12px, 1.6vw, 16px);
-  }`;
+    right: 3%; width: clamp(34px, 4vw, 44px); aspect-ratio: 1; border-radius: 50%; padding: 0;
+    display: grid; place-items: center; cursor: pointer; opacity: 0; pointer-events: none;
+  }
+  .peel-again.show { opacity: .85; pointer-events: auto; }
+  .peel-again:hover { opacity: 1; background: rgba(12,14,16,.55); }
+  .peel-again svg { width: 46%; height: 46%; }`;
+  const REPLAY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>';
 
   const PULL = 1.15;     // 纸角跟手的比例，>1 撕得比手快一点
   const DETACH = 0.55;   // 折痕走过多少就整张脱落
@@ -161,13 +173,14 @@
     reveal.style.backgroundImage = `url(${work.full})`;
     const hint = document.createElement('div');
     hint.className = 'peel-hint';
-    hint.textContent = '捏住一块往外撕，或者点一下';
+    hint.textContent = '撕开看看';
     const again = document.createElement('button');
     again.className = 'peel-again';
-    again.textContent = '再来一次';
+    again.innerHTML = REPLAY_ICON;
+    again.title = '再来一次'; again.setAttribute('aria-label', '再来一次');
     stage.append(reveal, hint, again);
 
-    let left = 0, alive = true;
+    let left = 0, alive = true, touched = false, teaseTimer = 0;
     const all = [];
 
     function tween(p, to, ms, done) {
@@ -185,8 +198,22 @@
 
     function finish() {
       stage.classList.add('done');
-      again.hidden = false;
-      setTimeout(() => { again.style.opacity = 1; }, 1200);
+      setTimeout(() => { if (alive) again.classList.add('show'); }, 1800);
+    }
+
+    // 没人动的时候，隔一会儿让随机一块纸片的角自己翘一下再落回去，示意能撕
+    function tease() {
+      if (!alive || touched) return;
+      const idle = all.filter(p => !p.gone);
+      if (idle.length) {
+        const p = idle[Math.random() * idle.length | 0];
+        const ang = Math.PI / 4 + Math.floor(Math.random() * 4) * Math.PI / 2;
+        const L = Math.min(p.el.clientWidth, p.el.clientHeight) * .32 / PULL;
+        p.el.classList.add('active');
+        tween(p, [Math.cos(ang) * L, Math.sin(ang) * L], 520,
+          () => tween(p, [0, 0], 420, () => p.el.classList.remove('active')));
+      }
+      teaseTimer = setTimeout(tease, 3200);
     }
 
     // 撕到底，然后飞走
@@ -210,6 +237,7 @@
       let start = null, id = null, moved = 0;
       p.el.addEventListener('pointerdown', e => {
         if (p.gone) return;
+        touched = true; clearTimeout(teaseTimer);
         cancelAnimationFrame(p.raf);
         id = e.pointerId; moved = 0;
         start = [e.clientX - p.v[0], e.clientY - p.v[1]];
@@ -276,8 +304,11 @@
         bind(p);
       }
       hint.style.opacity = 1;
-      again.hidden = true; again.style.opacity = 0;
+      again.classList.remove('show');
       stage.classList.remove('done');
+      touched = false;
+      clearTimeout(teaseTimer);
+      teaseTimer = setTimeout(tease, 1500);
     }
 
     again.addEventListener('click', build);
@@ -286,6 +317,7 @@
     return {
       destroy() {
         alive = false;
+        clearTimeout(teaseTimer);
         all.forEach(p => cancelAnimationFrame(p.raf));
         stage.innerHTML = '';
       },
