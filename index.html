@@ -11,8 +11,21 @@
     position: relative;
     width: min(100vw, calc(100dvh * 4 / 3));
     aspect-ratio: 4 / 3;
-    background: url(full.jpg) center / 100% 100% no-repeat;
+    background: url(bg.jpg) center / 100% 100% no-repeat;
     user-select: none; -webkit-user-select: none; touch-action: none;
+  }
+  /* 全撕完才整张换成原图 */
+  #reveal {
+    position: absolute; inset: 0;
+    background: url(full.jpg) center / 100% 100% no-repeat;
+    opacity: 0; transition: opacity 1s ease-out; pointer-events: none;
+  }
+  #stage.done #reveal { opacity: 1; }
+  /* 纸片底下的窗：撕开的地方才看得到人物 */
+  .hole {
+    position: absolute; pointer-events: none;
+    background-image: url(full.jpg); background-repeat: no-repeat;
+    -webkit-mask-size: 100% 100%; mask-size: 100% 100%;
   }
   #stage.done { animation: glow 1.6s ease-out; }
   @keyframes glow {
@@ -57,6 +70,7 @@
 </head>
 <body>
 <div id="stage">
+  <div id="reveal"></div>
   <div id="hint">捏住一块往外撕，或者点一下</div>
   <button id="again" hidden>再来一次</button>
 </div>
@@ -240,15 +254,26 @@ function bind(p) {
 }
 
 function build() {
-  stage.querySelectorAll('.piece').forEach(el => el.remove());
+  stage.querySelectorAll('.piece, .hole').forEach(el => el.remove());
   left = PIECES.length;
+  const reveal = document.getElementById('reveal');
   for (const [x1, y1, x2, y2] of PIECES) {
     const w = x2 - x1, h = y2 - y1;
+    const box = { left: pct(x1, W), top: pct(y1, H), width: pct(w, W), height: pct(h, H) };
+    const mask = stampMask(w, h);
+
+    const hole = document.createElement('div');
+    hole.className = 'hole';
+    Object.assign(hole.style, box, {
+      backgroundSize: `${W / w * 100}% ${H / h * 100}%`,
+      backgroundPosition: `${x1 / (W - w) * 100}% ${y1 / (H - h) * 100}%`,
+      webkitMaskImage: mask, maskImage: mask,
+    });
+    reveal.after(hole);
+
     const el = document.createElement('div');
     el.className = 'piece';
-    Object.assign(el.style, { left: pct(x1, W), top: pct(y1, H), width: pct(w, W), height: pct(h, H) });
-
-    const mask = stampMask(w, h);
+    Object.assign(el.style, box);
     const stuck = document.createElement('div');
     stuck.className = 'stuck';
     const flap = document.createElement('div');
