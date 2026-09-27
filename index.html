@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>撕开看看</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #07090a; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; }
+  #stage {
+    position: relative;
+    width: min(100vw, calc(100dvh * 4 / 3));
+    aspect-ratio: 4 / 3;
+    background: url(full.jpg) center / 100% 100% no-repeat;
+    user-select: none; -webkit-user-select: none; touch-action: none;
+  }
+  #stage.done { animation: glow 1.6s ease-out; }
+  @keyframes glow {
+    0% { filter: brightness(1); }
+    30% { filter: brightness(1.45) saturate(1.2); }
+    100% { filter: brightness(1); }
+  }
+  .piece {
+    position: absolute;
+    background: #f3eee4;
+    cursor: grab;
+    filter: drop-shadow(0 2px 3px rgba(0,0,0,.45));
+    will-change: transform;
+    transform-origin: 50% 50%;
+  }
+  .piece.dragging { cursor: grabbing; z-index: 10; }
+  .piece .face {
+    position: absolute; inset: 0;
+    background-image: url(bg.jpg);
+    background-repeat: no-repeat;
+  }
+  .piece.gone { pointer-events: none; transition: transform .7s cubic-bezier(.3,.6,.4,1), opacity .7s; opacity: 0; }
+  .piece.back { transition: transform .25s ease-out; }
+  #hint, #again {
+    position: absolute; left: 50%; bottom: 4%; transform: translateX(-50%);
+    color: rgba(255,255,255,.75); font-size: clamp(12px, 1.6vw, 16px); letter-spacing: .1em;
+    pointer-events: none; transition: opacity .6s; text-shadow: 0 1px 4px #000;
+  }
+  #again {
+    pointer-events: auto; opacity: 0; background: rgba(0,0,0,.35); border: 1px solid rgba(255,255,255,.4);
+    padding: .5em 1.2em; border-radius: 99px; cursor: pointer; font: inherit; font-size: clamp(12px, 1.6vw, 16px);
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="hint">按住拖开，或者点一下撕掉</div>
+  <button id="again" hidden>再来一次</button>
+</div>
+<script>
+// 人物区域（原图像素，2560×1920），由全图和背景图做差得出
+const W = 2560, H = 1920;
+const REGION = { x: 860, y: 280, w: 1140, h: 1640 };
+const COLS = 3, ROWS = 3;
+const OVERLAP = 14;   // 相邻纸片互相压住的宽度（原图像素）
+const EDGE = 8;       // 白色毛边宽度
+
+const stage = document.getElementById('stage');
+const hint = document.getElementById('hint');
+const again = document.getElementById('again');
+let left = 0;
+
+const pct = (v, total) => (v / total * 100) + '%';
+
+// 沿一条边生成锯齿点
+function jag(x1, y1, x2, y2, amp, straight) {
+  const pts = [];
+  const len = Math.hypot(x2 - x1, y2 - y1);
+  const n = Math.max(2, Math.round(len / 18));
+  const nx = -(y2 - y1) / len, ny = (x2 - x1) / len;
+  for (let i = 0; i < n; i++) {
+    const t = i / n;
+    const o = straight ? 0 : (Math.random() - .5) * amp;
+    pts.push([x1 + (x2 - x1) * t + nx * o, y1 + (y2 - y1) * t + ny * o]);
+  }
+  return pts;
+}
+
+// 纸片的撕边：贴着图片外沿的边保持直的
+function tornPath(w, h, inset, edges) {
+  const a = 10;
+  const pts = [
+    ...jag(inset, inset, w - inset, inset, a, edges.top),
+    ...jag(w - inset, inset, w - inset, h - inset, a, edges.right),
+    ...jag(w - inset, h - inset, inset, h - inset, a, edges.bottom),
+    ...jag(inset, h - inset, inset, inset, a, edges.left),
+  ];
+  return 'polygon(' + pts.map(([x, y]) => `${(x / w * 100).toFixed(2)}% ${(y / h * 100).toFixed(2)}%`).join(',') + ')';
+}
+
+function build() {
+  stage.querySelectorAll('.piece').forEach(p => p.remove());
+  left = COLS * ROWS;
+  const cw = REGION.w / COLS, rh = REGION.h / ROWS;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      let x = REGION.x + c * cw - OVERLAP, y = REGION.y + r * rh - OVERLAP;
+      let w = cw + OVERLAP * 2, h = rh + OVERLAP * 2;
+      if (y + h > H) h = H - y;
+      const edges = { top: false, right: false, bottom: y + h >= H, left: false };
+
+      const el = document.createElement('div');
+      el.className = 'piece';
+      Object.assign(el.style, { left: pct(x, W), top: pct(y, H), width: pct(w, W), height: pct(h, H) });
+      el.style.clipPath = tornPath(w, h, 0, edges);
+
+      const face = document.createElement('div');
+      face.className = 'face';
+      face.style.backgroundSize = `${W / w * 100}% ${H / h * 100}%`;
+      face.style.backgroundPosition = `${x / (W - w) * 100}% ${y / (H - h) * 100}%`;
+      face.style.clipPath = tornPath(w, h, EDGE, edges);
+      el.appendChild(face);
+
+      stage.insertBefore(el, hint);
+      bindTear(el);
+    }
+  }
+  hint.style.opacity = 1;
+  again.hidden = true; again.style.opacity = 0;
+  stage.classList.remove('done');
+}
+
+function tearOff(el, dx, dy) {
+  if (el.classList.contains('gone')) return;
+  const len = Math.hypot(dx, dy) || 1;
+  const fx = dx / len * 600, fy = dy / len * 600 - 120;
+  const rot = (Math.random() - .5) * 90;
+  el.classList.remove('dragging', 'back');
+  el.classList.add('gone');
+  el.style.transform = `translate(${fx}px, ${fy}px) rotate(${rot}deg) scale(.85)`;
+  hint.style.opacity = 0;
+  if (--left === 0) setTimeout(finish, 500);
+}
+
+function finish() {
+  stage.classList.add('done');
+  again.hidden = false;
+  setTimeout(() => again.style.opacity = 1, 1200);
+}
+
+function bindTear(el) {
+  let sx, sy, id = null, moved = 0;
+  el.addEventListener('pointerdown', e => {
+    if (el.classList.contains('gone')) return;
+    id = e.pointerId; sx = e.clientX; sy = e.clientY; moved = 0;
+    el.setPointerCapture(id);
+    el.classList.remove('back');
+    el.classList.add('dragging');
+  });
+  el.addEventListener('pointermove', e => {
+    if (e.pointerId !== id) return;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    moved = Math.hypot(dx, dy);
+    // 拖得越远，纸片越往上翘、越歪
+    const lift = Math.min(moved / 120, 1);
+    el.style.transform = `translate(${dx}px, ${dy}px) rotate(${dx / 12}deg) scale(${1 + lift * .05})`;
+    if (moved > stage.clientWidth * .12) { id = null; tearOff(el, dx, dy); }
+  });
+  const up = e => {
+    if (e.pointerId !== id) return;
+    id = null;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (moved < 6) {
+      tearOff(el, Math.random() - .5, -1);
+    } else {
+      el.classList.remove('dragging');
+      el.classList.add('back');
+      el.style.transform = '';
+    }
+  };
+  el.addEventListener('pointerup', up);
+  el.addEventListener('pointercancel', up);
+}
+
+again.addEventListener('click', build);
+build();
+</script>
+</body>
+</html>
