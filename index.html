@@ -20,26 +20,34 @@
     30% { filter: brightness(1.45) saturate(1.2); }
     100% { filter: brightness(1); }
   }
+
   .piece {
     position: absolute;
-    background: #f3eee4;
     cursor: grab;
-    filter: drop-shadow(0 2px 3px rgba(0,0,0,.45));
-    will-change: transform;
-    transform-origin: 50% 50%;
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,.55));
+    transition: filter .2s;
   }
-  .piece.dragging { cursor: grabbing; z-index: 10; }
-  .piece .face {
+  .piece.active { z-index: 10; cursor: grabbing; filter: drop-shadow(0 4px 8px rgba(0,0,0,.6)); }
+  .piece.gone { pointer-events: none; transition: transform .55s cubic-bezier(.3,.6,.4,1), opacity .55s; opacity: 0; }
+
+  /* 正面：米白纸边 + 印着背景的画面；背面：翻起来的纸背 */
+  .stuck, .flap {
     position: absolute; inset: 0;
+    -webkit-mask-size: 100% 100%; mask-size: 100% 100%;
+  }
+  .stuck { background: #f4efe4; }
+  .pic {
+    position: absolute;
     background-image: url(bg.jpg);
     background-repeat: no-repeat;
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,.18);
   }
-  .piece.gone { pointer-events: none; transition: transform .7s cubic-bezier(.3,.6,.4,1), opacity .7s; opacity: 0; }
-  .piece.back { transition: transform .25s ease-out; }
+  .flap { display: none; transform-origin: 0 0; background-color: #ece4d2; }
+
   #hint, #again {
     position: absolute; left: 50%; bottom: 4%; transform: translateX(-50%);
     color: rgba(255,255,255,.75); font-size: clamp(12px, 1.6vw, 16px); letter-spacing: .1em;
-    pointer-events: none; transition: opacity .6s; text-shadow: 0 1px 4px #000;
+    pointer-events: none; transition: opacity .6s; text-shadow: 0 1px 4px #000; z-index: 20;
   }
   #again {
     pointer-events: auto; opacity: 0; background: rgba(0,0,0,.35); border: 1px solid rgba(255,255,255,.4);
@@ -49,16 +57,29 @@
 </head>
 <body>
 <div id="stage">
-  <div id="hint">按住拖开，或者点一下撕掉</div>
+  <div id="hint">捏住一块往外撕，或者点一下</div>
   <button id="again" hidden>再来一次</button>
 </div>
 <script>
-// 人物区域（原图像素，2560×1920），由全图和背景图做差得出
+// ---- 布局（原图像素，2560×1920）----
 const W = 2560, H = 1920;
-const REGION = { x: 860, y: 280, w: 1140, h: 1640 };
-const COLS = 3, ROWS = 3;
-const OVERLAP = 14;   // 相邻纸片互相压住的宽度（原图像素）
-const EDGE = 8;       // 白色毛边宽度
+// 错落网格：左右两列的横缝故意不对齐，缝宽统一 24
+const PIECES = [
+  [860, 280, 1640, 1000],   // 头（最大的一块）
+  [1664, 280, 2000, 720],
+  [1664, 744, 2000, 1180],
+  [860, 1024, 1300, 1440],
+  [1324, 1024, 1640, 1440],
+  [1664, 1204, 2000, 1920],
+  [860, 1464, 1180, 1920],
+  [1204, 1464, 1640, 1920],
+];
+const BORDER = 22;             // 米白纸边宽
+const HOLE_R = 9, HOLE_GAP = 30;  // 邮票齿孔半径、间距
+
+// ---- 撕的手感 ----
+const PULL = 1.15;     // 纸角跟手的比例，>1 撕得比手快一点
+const DETACH = 0.55;   // 折痕走过多少就整张脱落
 
 const stage = document.getElementById('stage');
 const hint = document.getElementById('hint');
@@ -66,75 +87,118 @@ const again = document.getElementById('again');
 let left = 0;
 
 const pct = (v, total) => (v / total * 100) + '%';
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1];
 
-// 沿一条边生成锯齿点
-function jag(x1, y1, x2, y2, amp, straight) {
-  const pts = [];
-  const len = Math.hypot(x2 - x1, y2 - y1);
-  const n = Math.max(2, Math.round(len / 18));
-  const nx = -(y2 - y1) / len, ny = (x2 - x1) / len;
-  for (let i = 0; i < n; i++) {
-    const t = i / n;
-    const o = straight ? 0 : (Math.random() - .5) * amp;
-    pts.push([x1 + (x2 - x1) * t + nx * o, y1 + (y2 - y1) * t + ny * o]);
-  }
-  return pts;
+// 邮票齿孔遮罩：实心矩形沿边挖半圆
+function stampMask(w, h) {
+  const s = 0.5;
+  const cv = document.createElement('canvas');
+  cv.width = Math.round(w * s); cv.height = Math.round(h * s);
+  const ctx = cv.getContext('2d');
+  ctx.scale(s, s);
+  ctx.fillRect(0, 0, w, h);
+  ctx.globalCompositeOperation = 'destination-out';
+  const holes = (len, at) => {
+    const n = Math.max(2, Math.round(len / HOLE_GAP));
+    for (let i = 0; i <= n; i++) {
+      const [x, y] = at(len * i / n);
+      ctx.beginPath(); ctx.arc(x, y, HOLE_R, 0, Math.PI * 2); ctx.fill();
+    }
+  };
+  holes(w, t => [t, 0]); holes(w, t => [t, h]);
+  holes(h, t => [0, t]); holes(h, t => [w, t]);
+  return `url(${cv.toDataURL()})`;
 }
 
-// 纸片的撕边：贴着图片外沿的边保持直的
-function tornPath(w, h, inset, edges) {
-  const a = 10;
-  const pts = [
-    ...jag(inset, inset, w - inset, inset, a, edges.top),
-    ...jag(w - inset, inset, w - inset, h - inset, a, edges.right),
-    ...jag(w - inset, h - inset, inset, h - inset, a, edges.bottom),
-    ...jag(inset, h - inset, inset, inset, a, edges.left),
-  ];
-  return 'polygon(' + pts.map(([x, y]) => `${(x / w * 100).toFixed(2)}% ${(y / h * 100).toFixed(2)}%`).join(',') + ')';
-}
-
-function build() {
-  stage.querySelectorAll('.piece').forEach(p => p.remove());
-  left = COLS * ROWS;
-  const cw = REGION.w / COLS, rh = REGION.h / ROWS;
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      let x = REGION.x + c * cw - OVERLAP, y = REGION.y + r * rh - OVERLAP;
-      let w = cw + OVERLAP * 2, h = rh + OVERLAP * 2;
-      if (y + h > H) h = H - y;
-      const edges = { top: false, right: false, bottom: y + h >= H, left: false };
-
-      const el = document.createElement('div');
-      el.className = 'piece';
-      Object.assign(el.style, { left: pct(x, W), top: pct(y, H), width: pct(w, W), height: pct(h, H) });
-      el.style.clipPath = tornPath(w, h, 0, edges);
-
-      const face = document.createElement('div');
-      face.className = 'face';
-      face.style.backgroundSize = `${W / w * 100}% ${H / h * 100}%`;
-      face.style.backgroundPosition = `${x / (W - w) * 100}% ${y / (H - h) * 100}%`;
-      face.style.clipPath = tornPath(w, h, EDGE, edges);
-      el.appendChild(face);
-
-      stage.insertBefore(el, hint);
-      bindTear(el);
+// 多边形裁切：保留 f(q) >= 0 的部分
+function clipPoly(poly, f) {
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    const fa = f(a), fb = f(b);
+    if (fa >= 0) out.push(a);
+    if ((fa >= 0) !== (fb >= 0)) {
+      const t = fa / (fa - fb);
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
     }
   }
-  hint.style.opacity = 1;
-  again.hidden = true; again.style.opacity = 0;
-  stage.classList.remove('done');
+  return out;
+}
+const cssPoly = pts => pts.length < 3 ? 'polygon(0 0,0 0,0 0)'
+  : 'polygon(' + pts.map(p => `${p[0].toFixed(1)}px ${p[1].toFixed(1)}px`).join(',') + ')';
+
+// 往 u 方向撕时，从哪个角起、整张有多长
+function geom(w, h, u) {
+  const corners = [[0, 0], [w, 0], [w, h], [0, h]];
+  let C = corners[0];
+  for (const q of corners) if (dot(q, u) < dot(C, u)) C = q;
+  let span = 0;
+  for (const q of corners) span = Math.max(span, dot([q[0] - C[0], q[1] - C[1]], u));
+  return { corners, C, span };
 }
 
-function tearOff(el, dx, dy) {
-  if (el.classList.contains('gone')) return;
-  const len = Math.hypot(dx, dy) || 1;
-  const fx = dx / len * 600, fy = dy / len * 600 - 120;
-  const rot = (Math.random() - .5) * 90;
-  el.classList.remove('dragging', 'back');
-  el.classList.add('gone');
-  el.style.transform = `translate(${fx}px, ${fy}px) rotate(${rot}deg) scale(.85)`;
+// 按拖动向量 v 画出：还粘着的部分 + 翻过来的纸背。返回折痕走过的比例
+function render(p, vx, vy) {
+  const w = p.el.clientWidth, h = p.el.clientHeight;
+  const len = Math.hypot(vx, vy);
+  if (len < 0.5) {
+    p.stuck.style.clipPath = 'none';
+    p.flap.style.display = 'none';
+    return 0;
+  }
+  const u = [vx / len, vy / len];
+  const { corners, C, span } = geom(w, h, u);
+  const d = len * PULL / 2;                       // 折痕离起始角的距离
+  const M = [C[0] + u[0] * d, C[1] + u[1] * d];   // 折痕上一点
+  const side = q => (q[0] - M[0]) * u[0] + (q[1] - M[1]) * u[1];
+
+  p.stuck.style.clipPath = cssPoly(clipPoly(corners, side));
+  p.flap.style.clipPath = cssPoly(clipPoly(corners, q => -side(q)));
+  p.flap.style.display = 'block';
+
+  // 沿折痕镜像
+  const k = 2 * dot(M, u);
+  const a = 1 - 2 * u[0] * u[0], b = -2 * u[0] * u[1], dd = 1 - 2 * u[1] * u[1];
+  p.flap.style.transform = `matrix(${a},${b},${b},${dd},${k * u[0]},${k * u[1]})`;
+
+  // 纸背靠折痕处暗一点，越往纸角越亮
+  const n = [-u[0], -u[1]];
+  const ang = Math.atan2(n[0], -n[1]);
+  const L = Math.abs(w * Math.sin(ang)) + Math.abs(h * Math.cos(ang));
+  const t0 = ((M[0] - w / 2) * n[0] + (M[1] - h / 2) * n[1]) / L + 0.5;
+  p.flap.style.backgroundImage =
+    `linear-gradient(${ang}rad, rgba(80,60,30,.28) ${t0 * 100}%, rgba(255,255,255,.35) ${(t0 + .35) * 100}%)`;
+
+  return d / span;
+}
+
+function tween(p, to, ms, done) {
+  const from = p.v.slice(), t0 = performance.now();
+  const step = now => {
+    const t = Math.min((now - t0) / ms, 1), e = 1 - Math.pow(1 - t, 3);
+    p.v = [from[0] + (to[0] - from[0]) * e, from[1] + (to[1] - from[1]) * e];
+    render(p, p.v[0], p.v[1]);
+    if (t < 1) p.raf = requestAnimationFrame(step); else done && done();
+  };
+  cancelAnimationFrame(p.raf);
+  p.raf = requestAnimationFrame(step);
+}
+
+// 撕到底，然后飞走
+function detach(p, dir, ms) {
+  if (p.gone) return;
+  p.gone = true;
   hint.style.opacity = 0;
-  if (--left === 0) setTimeout(finish, 500);
+  const len = Math.hypot(dir[0], dir[1]);
+  const u = [dir[0] / len, dir[1] / len];
+  const { span } = geom(p.el.clientWidth, p.el.clientHeight, u);
+  const full = span * 2.05 / PULL;
+  tween(p, [u[0] * full, u[1] * full], ms, () => {
+    const fly = stage.clientWidth * .35;
+    p.el.classList.add('gone');
+    p.el.style.transform = `translate(${u[0] * fly}px, ${u[1] * fly - 40}px) rotate(${(Math.random() - .5) * 40}deg)`;
+    if (--left === 0) setTimeout(finish, 500);
+  });
 }
 
 function finish() {
@@ -143,38 +207,72 @@ function finish() {
   setTimeout(() => again.style.opacity = 1, 1200);
 }
 
-function bindTear(el) {
-  let sx, sy, id = null, moved = 0;
-  el.addEventListener('pointerdown', e => {
-    if (el.classList.contains('gone')) return;
-    id = e.pointerId; sx = e.clientX; sy = e.clientY; moved = 0;
-    el.setPointerCapture(id);
-    el.classList.remove('back');
-    el.classList.add('dragging');
+function bind(p) {
+  let start = null, id = null, moved = 0;
+  p.el.addEventListener('pointerdown', e => {
+    if (p.gone) return;
+    cancelAnimationFrame(p.raf);
+    id = e.pointerId; moved = 0;
+    start = [e.clientX - p.v[0], e.clientY - p.v[1]];
+    p.el.setPointerCapture(id);
+    p.el.classList.add('active');
   });
-  el.addEventListener('pointermove', e => {
-    if (e.pointerId !== id) return;
-    const dx = e.clientX - sx, dy = e.clientY - sy;
-    moved = Math.hypot(dx, dy);
-    // 拖得越远，纸片越往上翘、越歪
-    const lift = Math.min(moved / 120, 1);
-    el.style.transform = `translate(${dx}px, ${dy}px) rotate(${dx / 12}deg) scale(${1 + lift * .05})`;
-    if (moved > stage.clientWidth * .12) { id = null; tearOff(el, dx, dy); }
+  p.el.addEventListener('pointermove', e => {
+    if (e.pointerId !== id || p.gone) return;
+    p.v = [e.clientX - start[0], e.clientY - start[1]];
+    moved = Math.max(moved, Math.hypot(p.v[0], p.v[1]));
+    if (render(p, p.v[0], p.v[1]) > DETACH) { id = null; detach(p, p.v, 180); }
   });
   const up = e => {
     if (e.pointerId !== id) return;
     id = null;
-    const dx = e.clientX - sx, dy = e.clientY - sy;
     if (moved < 6) {
-      tearOff(el, Math.random() - .5, -1);
+      // 点一下：从随机一个角往对角撕开
+      const ang = Math.PI / 4 + Math.floor(Math.random() * 4) * Math.PI / 2 + (Math.random() - .5) * .5;
+      detach(p, [Math.cos(ang), Math.sin(ang)], 650);
     } else {
-      el.classList.remove('dragging');
-      el.classList.add('back');
-      el.style.transform = '';
+      // 没撕够，松手贴回去
+      tween(p, [0, 0], 260, () => p.el.classList.remove('active'));
     }
   };
-  el.addEventListener('pointerup', up);
-  el.addEventListener('pointercancel', up);
+  p.el.addEventListener('pointerup', up);
+  p.el.addEventListener('pointercancel', up);
+}
+
+function build() {
+  stage.querySelectorAll('.piece').forEach(el => el.remove());
+  left = PIECES.length;
+  for (const [x1, y1, x2, y2] of PIECES) {
+    const w = x2 - x1, h = y2 - y1;
+    const el = document.createElement('div');
+    el.className = 'piece';
+    Object.assign(el.style, { left: pct(x1, W), top: pct(y1, H), width: pct(w, W), height: pct(h, H) });
+
+    const mask = stampMask(w, h);
+    const stuck = document.createElement('div');
+    stuck.className = 'stuck';
+    const flap = document.createElement('div');
+    flap.className = 'flap';
+    for (const m of [stuck, flap]) { m.style.webkitMaskImage = mask; m.style.maskImage = mask; }
+
+    const pic = document.createElement('div');
+    pic.className = 'pic';
+    const px = x1 + BORDER, py = y1 + BORDER, pw = w - BORDER * 2, ph = h - BORDER * 2;
+    Object.assign(pic.style, {
+      left: pct(BORDER, w), top: pct(BORDER, h), width: pct(pw, w), height: pct(ph, h),
+      backgroundSize: `${W / pw * 100}% ${H / ph * 100}%`,
+      backgroundPosition: `${px / (W - pw) * 100}% ${py / (H - ph) * 100}%`,
+    });
+    stuck.appendChild(pic);
+    el.append(stuck, flap);
+    stage.insertBefore(el, hint);
+
+    const p = { el, stuck, flap, v: [0, 0], gone: false, raf: 0 };
+    bind(p);
+  }
+  hint.style.opacity = 1;
+  again.hidden = true; again.style.opacity = 0;
+  stage.classList.remove('done');
 }
 
 again.addEventListener('click', build);
