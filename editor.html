@@ -85,8 +85,10 @@
       <h3>预览和导出</h3>
       <button class="main" id="play">预览，撕一撕</button>
       <div class="row"><input type="text" id="name" placeholder="作品名（字母、数字、中文）"></div>
-      <div class="row"><button id="export">导出作品文件</button></div>
-      <p class="note">导出的 .json 上传到仓库 works 文件夹，等一两分钟链接就能用</p>
+      <div class="row" id="tokenRow"><input type="password" id="token" placeholder="GitHub 令牌（只第一次要填）"></div>
+      <div class="row"><button class="main" id="publish">发布</button></div>
+      <div class="row"><button id="export">只导出文件</button><button id="forget">忘记令牌</button></div>
+      <p class="note">发布会把作品直接存进仓库，一两分钟后链接生效；同名作品会被覆盖</p>
       <input type="text" id="link" readonly>
     </section>
   </aside>
@@ -376,20 +378,93 @@ $('pclose').addEventListener('click', () => {
   player && player.destroy(); player = null;
   $('preview').hidden = true;
 });
-$('export').addEventListener('click', () => {
+function workName() {
   const name = $('name').value.trim();
-  if (!/^[\w\-一-鿿]+$/.test(name)) { $('status').textContent = '作品名只能用字母、数字、中文、- 和 _'; return; }
+  if (!/^[\w\-一-鿿]+$/.test(name)) { $('status').textContent = '作品名只能用字母、数字、中文、- 和 _'; return null; }
+  return name;
+}
+function showLink(name) {
+  const link = $('link');
+  link.value = `https://ciel-claude.github.io/peel/?w=${encodeURIComponent(name)}`;
+  link.style.display = 'block';
+}
+$('export').addEventListener('click', () => {
+  const name = workName(); if (!name) return;
   const work = buildWork(); if (!work) return;
   const blob = new Blob([JSON.stringify(work)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = name + '.json'; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-  const link = $('link');
-  link.value = `https://ciel-claude.github.io/peel/?w=${encodeURIComponent(name)}`;
-  link.style.display = 'block';
-  $('status').textContent = `已导出 ${name}.json（${(blob.size / 1048576).toFixed(1)} MB）`;
+  showLink(name);
+  $('status').textContent = `已导出 ${name}.json（${(blob.size / 1048576).toFixed(1)} MB），传到仓库 works 文件夹后链接生效`;
 });
 $('link').addEventListener('focus', e => e.target.select());
+
+// ---- 一键发布：用令牌把作品直接写进仓库 works/ ----
+const REPO = 'ciel-claude/peel';
+const store = {
+  get() { try { return localStorage.getItem('peel-token') || ''; } catch { return ''; } },
+  set(v) { try { v ? localStorage.setItem('peel-token', v) : localStorage.removeItem('peel-token'); } catch {} },
+};
+const syncToken = () => { $('tokenRow').style.display = store.get() ? 'none' : 'flex'; };
+syncToken();
+$('forget').addEventListener('click', () => { store.set(''); syncToken(); $('status').textContent = '令牌已从这个浏览器删掉'; });
+
+const toBase64 = blob => new Promise(ok => {
+  const r = new FileReader();
+  r.onload = () => ok(r.result.slice(r.result.indexOf(',') + 1));
+  r.readAsDataURL(blob);
+});
+
+$('publish').addEventListener('click', async () => {
+  const name = workName(); if (!name) return;
+  const work = buildWork(); if (!work) return;
+  const token = store.get() || $('token').value.trim();
+  if (!token) { $('status').textContent = '先填 GitHub 令牌'; return; }
+
+  const btn = $('publish'); btn.disabled = true;
+  const say = t => { $('status').textContent = t; };
+  const api = `https://api.github.com/repos/${REPO}/contents/works/${encodeURIComponent(name)}.json`;
+  const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' };
+  try {
+    say('检查同名作品…');
+    const old = await fetch(api + '?ref=main', { headers });
+    if (old.status === 401 || old.status === 403) throw new Error('令牌不对或者没有这个仓库的权限');
+    let sha;
+    if (old.ok) {
+      if (!confirm(`已经有一件叫「${name}」的作品了，覆盖它吗？`)) { say('没有发布'); return; }
+      sha = (await old.json()).sha;
+    }
+    say('上传中…');
+    const content = await toBase64(new Blob([JSON.stringify(work)]));
+    const res = await fetch(api, {
+      method: 'PUT', headers,
+      body: JSON.stringify({ message: `${sha ? 'Update' : 'Add'} work ${name}`, content, branch: 'main', sha }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(res.status === 401 || res.status === 403 ? '令牌不对或者没有写入权限' : (err.message || `上传失败（${res.status}）`));
+    }
+    store.set(token); $('token').value = ''; syncToken();
+    showLink(name);
+    if (sha) { say('已更新，一两分钟后生效（看过旧版的人要刷新一下）'); return; }
+
+    // 新作品：等 Pages 部署完再告诉她链接能用了
+    say('已存进仓库，等网站更新…');
+    const url = `works/${encodeURIComponent(name)}.json`;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 4 * 60 * 1000) {
+      await new Promise(r => setTimeout(r, 8000));
+      const r = await fetch(url + '?t=' + Date.now(), { method: 'HEAD', cache: 'no-store' }).catch(() => null);
+      if (r && r.ok) { say('上线了，链接可以发了'); return; }
+    }
+    say('已存进仓库，但网站还没更新完，过几分钟再试链接');
+  } catch (e) {
+    say(e.message || '发布失败');
+  } finally {
+    btn.disabled = false;
+  }
+});
 </script>
 </body>
 </html>
