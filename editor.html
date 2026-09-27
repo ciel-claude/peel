@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>撕纸工作台</title>
+<style>
+  :root { --bg: #111416; --panel: #1a1e21; --line: #2c3236; --text: #dfe3e6; --dim: #8a9399; --accent: #e8a0b4; --prot: #7fd3e0; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.5 "PingFang SC", "Microsoft YaHei", sans-serif; }
+  body { display: flex; flex-direction: column; }
+  header { display: flex; gap: 12px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0 12px 0 0; font-weight: 600; letter-spacing: .1em; }
+  .file { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px dashed var(--line); border-radius: 6px; cursor: pointer; }
+  .file.ok { border-style: solid; border-color: var(--accent); }
+  .file input { display: none; }
+  #status { color: var(--dim); margin-left: auto; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #wrap { flex: 1; display: flex; align-items: center; justify-content: center; padding: 16px; min-width: 0; position: relative; }
+  #view { max-width: 100%; max-height: 100%; cursor: crosshair; touch-action: none; display: none; box-shadow: 0 0 0 1px var(--line); }
+  #empty { color: var(--dim); letter-spacing: .15em; }
+  aside { width: 290px; flex-shrink: 0; overflow-y: auto; border-left: 1px solid var(--line); background: var(--panel); padding: 4px 16px 24px; }
+  section { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 12px; color: var(--dim); font-weight: 500; margin: 0 0 10px; letter-spacing: .15em; }
+  .tools { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+  button { font: inherit; color: var(--text); background: #252a2e; border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  button:hover { border-color: #4a5359; }
+  button.on { border-color: var(--accent); color: var(--accent); }
+  button.on.prot { border-color: var(--prot); color: var(--prot); }
+  button.main { width: 100%; background: var(--accent); color: #1a1113; border: none; font-weight: 600; padding: 8px; }
+  .row { display: flex; gap: 6px; margin-top: 6px; }
+  .row button { flex: 1; }
+  label.slider { display: grid; grid-template-columns: 64px 1fr 40px; align-items: center; gap: 8px; margin: 6px 0; }
+  label.slider output { color: var(--dim); text-align: right; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  input[type=text] { width: 100%; font: inherit; color: var(--text); background: #0e1112; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+  .note { color: var(--dim); font-size: 12px; margin: 8px 0 0; }
+  #count { color: var(--dim); font-size: 12px; margin-top: 6px; }
+  #link { margin-top: 8px; display: none; }
+  #preview { position: fixed; inset: 0; background: #07090a; display: flex; align-items: center; justify-content: center; z-index: 50; }
+  #preview[hidden] { display: none; }
+  #pclose { position: fixed; top: 12px; right: 12px; z-index: 60; background: rgba(0,0,0,.5); }
+</style>
+</head>
+<body>
+<header>
+  <h1>撕纸工作台</h1>
+  <label class="file" id="lFull">① 有人物的图 <input type="file" id="fFull" accept="image/*"></label>
+  <label class="file" id="lBg">② 纯背景图 <input type="file" id="fBg" accept="image/*"></label>
+  <span id="status">图片只在这个浏览器里处理，不会上传</span>
+</header>
+<main>
+  <div id="wrap"><canvas id="view"></canvas><div id="empty">先选两张图</div></div>
+  <aside>
+    <section>
+      <h3>涂抹</h3>
+      <div class="tools">
+        <button data-tool="paint" class="on">画笔</button>
+        <button data-tool="erase">橡皮</button>
+        <button data-tool="protect" class="prot">保护笔</button>
+        <button data-tool="unprotect" class="prot">擦保护</button>
+      </div>
+      <label class="slider">笔刷 <input type="range" id="brush" min="4" max="120" value="30"><output></output></label>
+      <div class="row"><button id="auto">自动识别人物</button><button id="clearCover">清空涂抹</button></div>
+      <div class="row"><button id="clearProt">清空保护</button></div>
+      <p class="note">粉色 = 要盖住的地方；蓝色 = 保护区，切块时缝不会从这里穿过（比如脸）</p>
+    </section>
+    <section>
+      <h3>排版</h3>
+      <label class="slider">块大小 <input type="range" id="size" min="6" max="30" value="17"><output></output></label>
+      <label class="slider">缝宽 <input type="range" id="gap" min="2" max="30" value="9"><output></output></label>
+      <label class="slider">覆盖门槛 <input type="range" id="cov" min="5" max="80" value="30"><output></output></label>
+      <button class="main" id="gen">生成 / 换一种</button>
+      <div id="count"></div>
+      <p class="note">覆盖门槛：一块里涂抹区不到这个比例就扔掉，调高边缘更参差</p>
+    </section>
+    <section>
+      <h3>纸片样式</h3>
+      <label class="slider">齿孔 <input type="range" id="hole" min="15" max="90" value="35"><output></output></label>
+      <label class="slider">描边 <input type="range" id="rim" min="0" max="100" value="50"><output></output></label>
+      <label class="slider">阴影 <input type="range" id="shadow" min="0" max="100" value="55"><output></output></label>
+      <p class="note">图偏暗的时候把描边调高，齿孔会更显</p>
+    </section>
+    <section>
+      <h3>预览和导出</h3>
+      <button class="main" id="play">预览，撕一撕</button>
+      <div class="row"><input type="text" id="name" placeholder="作品名（字母、数字、中文）"></div>
+      <div class="row"><button id="export">导出作品文件</button></div>
+      <p class="note">导出的 .json 上传到仓库 works 文件夹，等一两分钟链接就能用</p>
+      <input type="text" id="link" readonly>
+    </section>
+  </aside>
+</main>
+<div id="preview" hidden><div id="pstage"></div><button id="pclose">✕ 回工作台</button></div>
+
+<script src="peel.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const view = $('view'), vctx = view.getContext('2d');
+const S = { full: null, bg: null, W: 0, H: 0, k: 1, mw: 0, mh: 0, pieces: [], tool: 'paint', enc: {} };
+const cover = document.createElement('canvas'), prot = document.createElement('canvas');
+const tmp = document.createElement('canvas');
+
+// ---- 滑块 ----
+const sliderFmt = {
+  brush: v => v, size: v => v + '%', gap: v => (v / 10).toFixed(1) + '%', cov: v => v + '%',
+  hole: v => (v / 100).toFixed(2) + '%', rim: v => v + '%', shadow: v => v + '%',
+};
+for (const id in sliderFmt) {
+  const el = $(id), out = el.nextElementSibling;
+  const upd = () => { out.textContent = sliderFmt[id](el.value); };
+  el.addEventListener('input', upd); upd();
+}
+const val = id => +$(id).value;
+
+// ---- 载图 ----
+function loadImage(file) {
+  return new Promise((ok, bad) => {
+    const img = new Image();
+    img.onload = () => ok(img); img.onerror = bad;
+    img.src = URL.createObjectURL(file);
+  });
+}
+$('fFull').addEventListener('change', async e => {
+  if (!e.target.files[0]) return;
+  S.full = await loadImage(e.target.files[0]); S.enc.full = null;
+  $('lFull').classList.add('ok');
+  setup();
+});
+$('fBg').addEventListener('change', async e => {
+  if (!e.target.files[0]) return;
+  S.bg = await loadImage(e.target.files[0]); S.enc.bg = null;
+  $('lBg').classList.add('ok');
+  setup();
+});
+
+function setup() {
+  if (!S.full) return;
+  const W = S.full.naturalWidth, H = S.full.naturalHeight;
+  if (W !== S.W || H !== S.H) {
+    S.W = W; S.H = H;
+    S.k = Math.min(1, 1000 / Math.max(W, H));
+    S.mw = Math.round(W * S.k); S.mh = Math.round(H * S.k);
+    for (const c of [view, cover, prot, tmp]) { c.width = S.mw; c.height = S.mh; }
+    S.pieces = [];
+  }
+  view.style.display = 'block'; $('empty').style.display = 'none';
+  if (S.bg) {
+    const warn = (S.bg.naturalWidth !== W || S.bg.naturalHeight !== H) ? '（两张图尺寸不一样，背景图会被拉伸对齐）' : '';
+    $('status').textContent = `${W}×${H} ${warn}`;
+    if (!hasPaint(cover)) autoDetect();
+  } else {
+    $('status').textContent = '还差纯背景图';
+  }
+  draw();
+}
+
+// ---- 画面 ----
+function tinted(mask, color) {
+  const t = tmp.getContext('2d');
+  t.globalCompositeOperation = 'source-over';
+  t.clearRect(0, 0, S.mw, S.mh);
+  t.drawImage(mask, 0, 0);
+  t.globalCompositeOperation = 'source-in';
+  t.fillStyle = color; t.fillRect(0, 0, S.mw, S.mh);
+  return tmp;
+}
+function draw() {
+  if (!S.full) return;
+  vctx.clearRect(0, 0, S.mw, S.mh);
+  vctx.drawImage(S.full, 0, 0, S.mw, S.mh);
+  vctx.drawImage(tinted(cover, 'rgba(232,110,150,.45)'), 0, 0);
+  vctx.drawImage(tinted(prot, 'rgba(90,200,220,.5)'), 0, 0);
+  vctx.lineWidth = 2;
+  vctx.strokeStyle = 'rgba(255,245,225,.95)';
+  vctx.fillStyle = 'rgba(255,245,225,.12)';
+  for (const [x1, y1, x2, y2] of S.pieces) {
+    const k = S.k;
+    vctx.fillRect(x1 * k, y1 * k, (x2 - x1) * k, (y2 - y1) * k);
+    vctx.strokeRect(x1 * k + 1, y1 * k + 1, (x2 - x1) * k - 2, (y2 - y1) * k - 2);
+  }
+}
+function hasPaint(c) {
+  const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+  for (let i = 3; i < d.length; i += 4) if (d[i] > 127) return true;
+  return false;
+}
+
+// ---- 涂抹 ----
+document.querySelectorAll('[data-tool]').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('[data-tool]').forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); S.tool = b.dataset.tool;
+}));
+let last = null;
+function toCanvas(e) {
+  const r = view.getBoundingClientRect();
+  return [(e.clientX - r.left) / r.width * S.mw, (e.clientY - r.top) / r.height * S.mh];
+}
+function stroke(a, b) {
+  const target = (S.tool === 'paint' || S.tool === 'erase') ? cover : prot;
+  const c = target.getContext('2d');
+  c.globalCompositeOperation = (S.tool === 'erase' || S.tool === 'unprotect') ? 'destination-out' : 'source-over';
+  c.strokeStyle = c.fillStyle = '#fff';
+  c.lineCap = 'round'; c.lineWidth = val('brush') * 2;
+  c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+}
+view.addEventListener('pointerdown', e => {
+  view.setPointerCapture(e.pointerId);
+  last = toCanvas(e); stroke(last, last); draw();
+});
+view.addEventListener('pointermove', e => {
+  if (!last) return;
+  const p = toCanvas(e); stroke(last, p); last = p; draw();
+});
+view.addEventListener('pointerup', () => { last = null; });
+view.addEventListener('pointercancel', () => { last = null; });
+$('clearCover').addEventListener('click', () => { cover.getContext('2d').clearRect(0, 0, S.mw, S.mh); draw(); });
+$('clearProt').addEventListener('click', () => { prot.getContext('2d').clearRect(0, 0, S.mw, S.mh); draw(); });
+
+// ---- 积分图：快速求矩形里有多少涂抹 ----
+function integral(bits, w, h) {
+  const I = new Float64Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let row = 0;
+    for (let x = 0; x < w; x++) {
+      row += bits[y * w + x];
+      I[(y + 1) * (w + 1) + x + 1] = I[y * (w + 1) + x + 1] + row;
+    }
+  }
+  return I;
+}
+function boxSum(I, w, h, x1, y1, x2, y2) {
+  x1 = Math.max(0, Math.min(w, x1)); x2 = Math.max(0, Math.min(w, x2));
+  y1 = Math.max(0, Math.min(h, y1)); y2 = Math.max(0, Math.min(h, y2));
+  if (x2 <= x1 || y2 <= y1) return 0;
+  const W1 = w + 1;
+  return I[y2 * W1 + x2] - I[y1 * W1 + x2] - I[y2 * W1 + x1] + I[y1 * W1 + x1];
+}
+function bitsOf(c) {
+  const d = c.getContext('2d').getImageData(0, 0, S.mw, S.mh).data;
+  const b = new Uint8Array(S.mw * S.mh);
+  for (let i = 0; i < b.length; i++) b[i] = d[i * 4 + 3] > 127 ? 1 : 0;
+  return b;
+}
+
+// ---- 自动识别：两张图逐像素比，不一样的地方就是人物 ----
+function pixels(img) {
+  const c = document.createElement('canvas'); c.width = S.mw; c.height = S.mh;
+  const x = c.getContext('2d'); x.drawImage(img, 0, 0, S.mw, S.mh);
+  return x.getImageData(0, 0, S.mw, S.mh).data;
+}
+function autoDetect() {
+  if (!S.full || !S.bg) return;
+  const a = pixels(S.full), b = pixels(S.bg), w = S.mw, h = S.mh;
+  let bits = new Uint8Array(w * h);
+  for (let i = 0; i < bits.length; i++) {
+    const j = i * 4;
+    const d = Math.max(Math.abs(a[j] - b[j]), Math.abs(a[j + 1] - b[j + 1]), Math.abs(a[j + 2] - b[j + 2]));
+    bits[i] = d > 40 ? 1 : 0;
+  }
+  // 去噪点（邻域多数）再稍微膨胀一圈
+  const pass = (src, r, keep) => {
+    const I = integral(src, w, h), out = new Uint8Array(w * h), area = (2 * r + 1) ** 2;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++)
+      out[y * w + x] = keep(boxSum(I, w, h, x - r, y - r, x + r + 1, y + r + 1) / area) ? 1 : 0;
+    return out;
+  };
+  bits = pass(bits, 3, f => f > .5);
+  bits = pass(bits, 3, f => f > 0);
+  const c = cover.getContext('2d'), img = c.createImageData(w, h);
+  for (let i = 0; i < bits.length; i++) if (bits[i]) { img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = img.data[i * 4 + 3] = 255; }
+  c.putImageData(img, 0, 0);
+  draw();
+}
+$('auto').addEventListener('click', () => {
+  if (!S.bg) { $('status').textContent = '自动识别要两张图都选好'; return; }
+  autoDetect();
+});
+
+// ---- 排版：在涂抹区外接框里反复横切竖切，缝宽固定，再扔掉覆盖太少的块 ----
+function generate() {
+  if (!S.full) return;
+  const w = S.mw, h = S.mh, k = S.k;
+  const cb = bitsOf(cover), pb = bitsOf(prot);
+  const Ic = integral(cb, w, h), Ip = integral(pb, w, h);
+
+  let bx1 = w, by1 = h, bx2 = -1, by2 = -1;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (cb[y * w + x]) {
+    if (x < bx1) bx1 = x; if (x > bx2) bx2 = x; if (y < by1) by1 = y; if (y > by2) by2 = y;
+  }
+  if (bx2 < 0) { $('count').textContent = '先涂抹要盖住的地方'; S.pieces = []; draw(); return; }
+
+  const W = S.W;
+  const G = Math.max(1, Math.round(val('gap') / 1000 * W));
+  const side = val('size') / 100 * W, target = side * side, minSide = side * .45;
+  const minCov = val('cov') / 100;
+  const sum = (I, r) => boxSum(I, w, h, Math.floor(r[0] * k), Math.floor(r[1] * k), Math.ceil(r[2] * k), Math.ceil(r[3] * k));
+  const area = r => Math.max(1, (Math.ceil(r[2] * k) - Math.floor(r[0] * k)) * (Math.ceil(r[3] * k) - Math.floor(r[1] * k)));
+
+  const leaves = [];
+  const split = (r, depth, prev) => {
+    const rw = r[2] - r[0], rh = r[3] - r[1];
+    if (depth > 14 || rw * rh < target * (.6 + Math.random() * .9)) { leaves.push(r); return; }
+    // 大多跟上一刀反着切，不然会切成一根根竖条；其余时候偏向切长边
+    let horiz = rh > rw * (.75 + Math.random() * .5);
+    if (prev !== undefined && Math.random() < .65) horiz = !prev;
+    else if (Math.random() < .2) horiz = !horiz;
+    for (const o of [horiz, !horiz]) {
+      const len = o ? rh : rw, start = o ? r[1] : r[0];
+      if (len < minSide * 2 + G) continue;
+      for (let t = 0; t < 14; t++) {
+        const pos = Math.round(start + minSide + Math.random() * (len - 2 * minSide - G));
+        const band = o ? [r[0], pos, r[2], pos + G] : [pos, r[1], pos + G, r[3]];
+        if (sum(Ip, band) > 0) continue;   // 缝不许穿过保护区
+        split(o ? [r[0], r[1], r[2], pos] : [r[0], r[1], pos, r[3]], depth + 1, o);
+        split(o ? [r[0], pos + G, r[2], r[3]] : [pos + G, r[1], r[2], r[3]], depth + 1, o);
+        return;
+      }
+    }
+    leaves.push(r);
+  };
+  split([Math.floor(bx1 / k), Math.floor(by1 / k), Math.min(S.W, Math.ceil((bx2 + 1) / k)), Math.min(S.H, Math.ceil((by2 + 1) / k))], 0);
+
+  const P = leaves.filter(r => sum(Ic, r) / area(r) >= minCov).map(r => r.map(Math.round));
+
+  // 外轮廓上没挨着别的块的边，随机往里收一点，四周更参差；挨着的边不动，缝宽保持一致
+  const overlap = (a1, a2, b1, b2) => Math.min(a2, b2) - Math.max(a1, b1) > 0;
+  const next = (edge, other) => other >= edge && other <= edge + G + 2;
+  const free = P.map(A => {
+    const o = P.filter(B => B !== A);
+    return {
+      l: !o.some(B => next(B[2], A[0]) && overlap(A[1], A[3], B[1], B[3])),
+      r: !o.some(B => next(A[2], B[0]) && overlap(A[1], A[3], B[1], B[3])),
+      t: !o.some(B => next(B[3], A[1]) && overlap(A[0], A[2], B[0], B[2])),
+      b: !o.some(B => next(A[3], B[1]) && overlap(A[0], A[2], B[0], B[2])),
+    };
+  });
+  const jit = () => Math.random() < .6 ? Math.random() * .22 : 0;
+  P.forEach((A, i) => {
+    const pw = A[2] - A[0], ph = A[3] - A[1], f = free[i];
+    if (f.l) A[0] += Math.round(pw * jit());
+    if (f.r) A[2] -= Math.round(pw * jit());
+    if (f.t) A[1] += Math.round(ph * jit());
+    if (f.b) A[3] -= Math.round(ph * jit());
+  });
+  S.pieces = P;
+  $('count').textContent = `${S.pieces.length} 块`;
+  draw();
+}
+$('gen').addEventListener('click', generate);
+
+// ---- 预览和导出 ----
+function encode(img) {
+  const c = document.createElement('canvas'); c.width = S.W; c.height = S.H;
+  c.getContext('2d').drawImage(img, 0, 0, S.W, S.H);
+  return c.toDataURL('image/jpeg', .92);
+}
+function buildWork() {
+  if (!S.full || !S.bg) { $('status').textContent = '两张图都要选好'; return null; }
+  if (!S.pieces.length) { $('status').textContent = '先点"生成"排出纸片'; return null; }
+  S.enc.full = S.enc.full || encode(S.full);
+  S.enc.bg = S.enc.bg || encode(S.bg);
+  const holeR = val('hole') / 10000 * S.W;
+  return {
+    v: 1, width: S.W, height: S.H, bg: S.enc.bg, full: S.enc.full, pieces: S.pieces,
+    style: { holeR: +holeR.toFixed(1), holeGap: +(holeR * 3.3).toFixed(1), rim: val('rim') / 100, shadow: val('shadow') / 100 },
+  };
+}
+let player = null;
+$('play').addEventListener('click', () => {
+  const work = buildWork(); if (!work) return;
+  $('preview').hidden = false;
+  player = Peel.mount($('pstage'), work);
+});
+$('pclose').addEventListener('click', () => {
+  player && player.destroy(); player = null;
+  $('preview').hidden = true;
+});
+$('export').addEventListener('click', () => {
+  const name = $('name').value.trim();
+  if (!/^[\w\-一-鿿]+$/.test(name)) { $('status').textContent = '作品名只能用字母、数字、中文、- 和 _'; return; }
+  const work = buildWork(); if (!work) return;
+  const blob = new Blob([JSON.stringify(work)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name + '.json'; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  const link = $('link');
+  link.value = `https://ciel-claude.github.io/peel/?w=${encodeURIComponent(name)}`;
+  link.style.display = 'block';
+  $('status').textContent = `已导出 ${name}.json（${(blob.size / 1048576).toFixed(1)} MB）`;
+});
+$('link').addEventListener('focus', e => e.target.select());
+</script>
+</body>
+</html>
