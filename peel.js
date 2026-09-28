@@ -234,20 +234,24 @@
     }
 
     function bind(p) {
-      let start = null, id = null, moved = 0;
+      let sc = null, v0 = null, id = null, moved = 0;
       p.el.addEventListener('pointerdown', e => {
         if (p.gone) return;
         touched = true; clearTimeout(teaseTimer);
         cancelAnimationFrame(p.raf);
         id = e.pointerId; moved = 0;
-        start = [e.clientX - p.v[0], e.clientY - p.v[1]];
+        sc = [e.clientX, e.clientY]; v0 = p.v.slice();
         p.el.setPointerCapture(id);
         p.el.classList.add('active');
       });
       p.el.addEventListener('pointermove', e => {
         if (e.pointerId !== id || p.gone) return;
-        p.v = [e.clientX - start[0], e.clientY - start[1]];
-        moved = Math.max(moved, Math.hypot(p.v[0], p.v[1]));
+        // 舞台被转了 90 度（竖屏看横图）时，把屏幕上的拖动换算回纸片自己的方向
+        const sx = e.clientX - sc[0], sy = e.clientY - sc[1];
+        const rot = (+stage.dataset.rot || 0) * Math.PI / 180;
+        const lx = Math.cos(rot) * sx + Math.sin(rot) * sy, ly = -Math.sin(rot) * sx + Math.cos(rot) * sy;
+        p.v = [v0[0] + lx, v0[1] + ly];
+        moved = Math.max(moved, Math.hypot(lx, ly));
         if (render(p, p.v[0], p.v[1]) > DETACH) { id = null; detach(p, p.v, 180); }
       });
       const up = e => {

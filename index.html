@@ -8,16 +8,81 @@
   html, body { margin: 0; height: 100%; background: #07090a; overflow: hidden; }
   body { display: flex; align-items: center; justify-content: center; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; }
   #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,.55); letter-spacing: .15em; font-size: 14px; pointer-events: none; }
+
+  /* 竖屏手机看横图：整张转 90 度铺满，手机横着拿就是正的 */
+  #stage.rotated {
+    position: fixed; top: 50%; left: 50%;
+    width: min(100dvh, calc(100vw * var(--ar)));
+    transform: translate(-50%, -50%) rotate(90deg);
+  }
+
+  /* 打开前的"横过来看"提示 */
+  #gate {
+    position: fixed; inset: 0; z-index: 30;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px;
+    background: #07090a; color: rgba(255,255,255,.85); transition: opacity .4s;
+  }
+  #gate[hidden] { display: none; }
+  #gate svg { width: 64px; height: 64px; animation: turn 2.4s ease-in-out infinite; }
+  @keyframes turn {
+    0%, 25% { transform: rotate(0); }
+    55%, 85% { transform: rotate(-90deg); }
+    100% { transform: rotate(0); }
+  }
+  #gate p { margin: 0; font-size: 15px; letter-spacing: .3em; padding-left: .3em; }
+  #gate button {
+    margin-top: 18px; font: inherit; font-size: 12px; letter-spacing: .1em;
+    color: rgba(255,255,255,.6); background: none; border: 1px solid rgba(255,255,255,.2);
+    border-radius: 99px; padding: .6em 1.3em; cursor: pointer;
+  }
 </style>
 </head>
 <body>
 <div id="stage"></div>
 <div id="msg">加载中…</div>
+<div id="gate" hidden>
+  <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+    <rect x="20" y="8" width="24" height="48" rx="4"/><line x1="29" y1="50" x2="35" y2="50"/>
+  </svg>
+  <p>横过来看更好</p>
+  <button id="asis">屏幕转不过来？点这里直接看</button>
+</div>
 <script src="peel.js"></script>
 <script>
 // 链接形如 ?w=作品名，只加载 works/作品名.json 这一件
 const msg = document.getElementById('msg');
+const stage = document.getElementById('stage');
+const gate = document.getElementById('gate');
 const name = new URLSearchParams(location.search).get('w');
+
+const portrait = () => innerHeight > innerWidth;
+const touch = matchMedia('(pointer: coarse)').matches;
+
+function start(work) {
+  let mounted = false, rotated = false;
+  const mount = () => { if (!mounted) { mounted = true; Peel.mount(stage, work); } };
+  const setRotated = on => {
+    rotated = on;
+    stage.classList.toggle('rotated', on);
+    stage.dataset.rot = on ? 90 : 0;
+  };
+
+  // 竖着拿手机看横图：先提示横过来；锁了方向的可以选直接转着看
+  if (work.width > work.height && touch && portrait()) {
+    gate.hidden = false;
+    document.getElementById('asis').onclick = () => { setRotated(true); gate.hidden = true; mount(); };
+  } else {
+    mount();
+  }
+
+  addEventListener('resize', () => {
+    if (portrait()) return;
+    // 手机真的横过来了：收起提示，取消手动旋转
+    gate.hidden = true;
+    if (rotated) setRotated(false);
+    mount();
+  });
+}
 
 if (!name || !/^[\w\-一-鿿]+$/.test(name)) {
   msg.textContent = '这里什么都没有';
@@ -30,10 +95,7 @@ if (!name || !/^[\w\-一-鿿]+$/.test(name)) {
         const img = new Image(); img.onload = ok; img.onerror = bad; img.src = src;
       }))).then(() => work);
     })
-    .then(work => {
-      msg.remove();
-      Peel.mount(document.getElementById('stage'), work);
-    })
+    .then(work => { msg.remove(); start(work); })
     .catch(() => { msg.textContent = '没有找到这件作品'; });
 }
 </script>
